@@ -21,7 +21,7 @@ Teachers will also have their own separate dashboard containing a list of consul
 ## How to use
 
 1. Install required dependencies by running `npm install` within the code's root directory in terminal.
-2. Open the code `student.html` and find `const API_KEY = "GEMINI_API_KEY"`. Replace `GEMINI_API_KEY` with your working Google Gemini API key.
+2. Open the code `student.html` and find `const API_KEY = "GEMINI_API_KEY"`. Replace `GEMINI_API_KEY` with your working Google Gemini API key. If you don't have a key yet, you can generate one through this link `https://aistudio.google.com/api-keys`.
 3. Run the file `index.html` on a browser to access the project's main page.
 
 ## Note
