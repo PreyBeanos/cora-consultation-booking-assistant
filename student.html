@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CORA — Book a Session</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="importmap">
+      { "imports": { "@google/genai": "https://esm.sh/@google/genai@1.3.0" } }
+    </script>
+    <style>
+      .msg-bubble ul {
+        padding-left: 16px;
+        margin-top: 4px;
+      }
+      .msg-bubble li {
+        margin-bottom: 2px;
+      }
+      .msg-bubble code {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 1px 5px;
+        font-size: 12px;
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chat-shell">
+      <!-- Sidebar: My Bookings -->
+      <aside class="chat-sidebar" id="chat-sidebar">
+        <h3>My Bookings</h3>
+        <div id="booking-list">
+          <p style="color: var(--textSm); font-size: 12px">No bookings yet.</p>
+        </div>
+        <div
+          style="
+            margin-top: auto;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+          "
+        >
+          <a
+            href="index.html"
+            class="btn btn-ghost btn-sm"
+            style="width: 100%; justify-content: center; border-radius: 99px"
+            >← Sign Out</a
+          >
+        </div>
+      </aside>
+
+      <!-- Main Chat -->
+      <div class="chat-main">
+        <!-- Header -->
+        <div class="chat-header">
+          <div>
+            <div class="bot-name">Cora</div>
+            <div class="bot-status" id="bot-status">Online</div>
+          </div>
+          <div style="margin-left: auto">
+            <button class="btn btn-ghost btn-sm" id="clear-chat-btn">
+              Clear chat
+            </button>
+          </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="chat-messages" id="chat-messages"></div>
+
+        <!-- Input -->
+        <div class="chat-input-area">
+          <div class="chat-input-row">
+            <div class="chat-input-wrap">
+              <textarea
+                id="chat-input"
+                placeholder="Type a message…"
+                rows="1"
+              ></textarea>
+            </div>
+            <button class="send-btn" id="send-btn">➤</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="shared.js"></script>
+    <script type="module">
+      import { GoogleGenAI } from "@google/genai";
+
+      // ── User identity ─────────────────────────────────────────────────────────────
+      const userId = sessionStorage.getItem("currentUserId");
+      const userRole = sessionStorage.getItem("currentUserRole");
+      if (!userId || userRole !== "student") {
+        window.location.href = "index.html";
+      }
+      const currentStudent = STUDENTS.find((s) => s.id === userId);
+
+      // ── App state ─────────────────────────────────────────────────────────────────
+      let appState = getAppState();
+      const API_KEY = "AIzaSyC4uPgBKZjx1SiNYwQ4R4lsYYkPIEsol6U"; // 🔑 paste your key here
+      const ai = new GoogleGenAI({ apiKey: API_KEY });
+      let chatHistory = []; // Gemini multi-turn format
+      let isLoading = false;
+      let pendingBooking = null;
+
+      // ── DOM refs ──────────────────────────────────────────────────────────────────
+      const messagesEl = document.getElementById("chat-messages");
+      const inputEl = document.getElementById("chat-input");
+      const sendBtn = document.getElementById("send-btn");
+      const statusEl = document.getElementById("bot-status");
+      const bookingList = document.getElementById("booking-list");
+
+      function initChat() {
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        statusEl.textContent = "Online";
+        statusEl.style.color = "var(--green)";
+
+        chatHistory = [];
+        messagesEl.innerHTML = "";
+
+        // Greeting
+        const greeting = `Hello, **${currentStudent.name}**!
+
+                          I'm your consultation scheduling assistant. I can help you:
+                          - Browse teacher availability
+                          - Book a consultation session
+                          - Check or cancel your existing bookings
+                          What would you like to do today?`;
+        addBotMessage(greeting, [
+          "Show available teachers",
+          "Book a consultation",
+          "View my bookings",
+        ]);
+        renderBookingList();
+      }
+
+      // ── Gemini API call ───────────────────────────────────────────────────────────
+      async function callGemini(userMessage) {
+        // Always read fresh state so schedule changes are reflected immediately
+        appState = getAppState();
+
+        // Build explicit teacher + schedule listing
+        const teacherLines = TEACHERS.map((t) => {
+          const slots = appState.schedules[t.id] || [];
+          const slotDesc = slots.length
+            ? slots
+                .map((s) => `      • ${s.day}: ${fmt(s.start)} – ${fmt(s.end)}`)
+                .join("\n")
+            : "      • No availability set yet.";
+          const booked = appState.consultations.filter(
+            (c) => c.teacherId === t.id && c.status !== "rejected",
+          );
+          const bookedDesc = booked.length
+            ? booked
+                .map(
+                  (b) =>
+                    `      [BOOKED] ${b.day} ${fmt(b.start)} for ${b.duration}min (${b.status})`,
+                )
+                .join("\n")
+            : "";
+          return `  Teacher: ${t.name}\n  ID: ${t.id}\n  Subject: ${t.subject}\n  Available windows:\n${slotDesc}${bookedDesc ? "\n  Already booked:\n" + bookedDesc : ""}`;
+        }).join("\n\n");
+
+        const myBookings =
+          appState.consultations
+            .filter((c) => c.studentId === userId)
+            .map((c) => {
+              const t = TEACHERS.find((x) => x.id === c.teacherId);
+              return `  - ID:${c.id} | ${t?.name} | ${c.day} ${fmt(c.start)} (${c.duration}min) | ${c.status}`;
+            })
+            .join("\n") || "  None yet.";
+
+        const systemPrompt = `You are Cora, a scheduling assistant helping student "${currentStudent.name}" book academic consultations.
+
+                              THIS SYSTEM HAS EXACTLY 3 TEACHERS. You must ONLY refer to these teachers and NO others:
+
+                              ${teacherLines}
+
+                              === THIS STUDENT'S BOOKINGS ===
+                              ${myBookings}
+
+                              === INSTRUCTIONS ===
+                              1. When asked about available teachers, list ALL THREE teachers above with their subjects and available days/times.
+                              2. Help the student pick a teacher, day, time slot, and duration (15 / 30 / 45 / 60 min).
+                              3. Recommend duration: 15min, 30min, 45min, 60min.
+                              4. Only suggest times that fall within a teacher's availability window and are NOT already booked.
+                              5. Never reveal which student blocked a taken slot — just say "that time is unavailable."
+                              6. Once the student confirms all details, output EXACTLY this on its own line (nothing else on that line):
+                                BOOK:teacherId|day|HH:MM|durationMinutes|topic
+                                Example: BOOK:t1|Monday|09:00|30|Help with recursion
+                              7. For cancellations output: CANCEL:consultationId
+                              8. Use markdown lightly: **bold** for names/times, bullet lists for options.
+                              9. Start times must be on 15-minute marks (e.g. 09:00, 09:15, 09:30…).
+                              10. Do NOT make up teachers, subjects, or schedules outside what is listed above.
+                              11. For bulleted lists that are related to one another, make sure to space the lines after one another (no extra line).
+                              12. Make sure to not double space in lines in general.`;
+
+        chatHistory.push({ role: "user", parts: [{ text: userMessage }] });
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3.1-flash-lite-preview",
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.5,
+            maxOutputTokens: 1024,
+          },
+          contents: chatHistory,
+        });
+
+        const text = response.text || "";
+        chatHistory.push({ role: "model", parts: [{ text }] });
+        return text;
+      }
+
+      // ── Message send flow ─────────────────────────────────────────────────────────
+      async function sendMessage(text) {
+        if (!text.trim() || isLoading) return;
+        isLoading = true;
+        sendBtn.disabled = true;
+
+        addUserMessage(text);
+        inputEl.value = "";
+        autoResize();
+
+        const typingId = addTypingIndicator();
+
+        try {
+          const reply = await callGemini(text);
+          removeTypingIndicator(typingId);
+          processReply(reply);
+        } catch (err) {
+          removeTypingIndicator(typingId);
+          addBotMessage(
+            `Something went wrong: **${err.message}**\n\nPlease check your API key or try again.`,
+          );
+        } finally {
+          isLoading = false;
+          sendBtn.disabled = false;
+          inputEl.focus();
+        }
+      }
+
+      // ── Process Gemini reply, detect BOOK/CANCEL commands ─────────────────────────
+      function processReply(text) {
+        // Check for BOOK command
+        const bookMatch = text.match(
+          /BOOK:([^\|\n]+)\|([^\|\n]+)\|([^\|\n]+)\|([^\|\n]+)\|?([^\n]*)/,
+        );
+        if (bookMatch) {
+          const [_, teacherId, day, start, durStr, topic] = bookMatch;
+          const duration = parseInt(durStr.trim());
+          const teacher = TEACHERS.find((t) => t.id === teacherId.trim());
+          const dayClean = day.trim();
+          const startClean = start.trim();
+
+          if (!teacher) {
+            addBotMessage(
+              "I had trouble identifying the teacher. Could you clarify?",
+            );
+            return;
+          }
+
+          // Validate overlap one more time
+          const startMin = toMin(startClean);
+          const overlap = checkOverlap(
+            appState,
+            teacherId.trim(),
+            dayClean,
+            startMin,
+            startMin + duration,
+          );
+          if (overlap) {
+            const cleanReply = text.replace(/BOOK:[^\n]+/, "").trim();
+            addBotMessage(
+              (cleanReply || "") +
+                "\n\nThat slot just got taken. Please choose a different time.",
+            );
+            return;
+          }
+
+          // Store pending, show confirmation UI
+          pendingBooking = {
+            teacherId: teacherId.trim(),
+            day: dayClean,
+            start: startClean,
+            duration,
+            topic: (topic || "").trim(),
+          };
+          const cleanReply = text.replace(/BOOK:[^\n]+/, "").trim();
+          showBookingConfirm(cleanReply, pendingBooking, teacher);
+          return;
+        }
+
+        // Check for CANCEL command
+        const cancelMatch = text.match(/CANCEL:([a-z0-9]+)/i);
+        if (cancelMatch) {
+          const cid = cancelMatch[1];
+          const c = appState.consultations.find(
+            (x) => x.id === cid && x.studentId === userId,
+          );
+          if (c) {
+            c.status = "rejected";
+            saveState(appState);
+            const cleanReply = text.replace(/CANCEL:[^\n]+/, "").trim();
+            addBotMessage(
+              (cleanReply || "Your booking has been cancelled.") +
+                "\n\nBooking cancelled successfully.",
+            );
+            renderBookingList();
+          } else {
+            addBotMessage("I couldn't find that booking to cancel.");
+          }
+          return;
+        }
+
+        // Regular message
+        addBotMessage(text);
+      }
+
+      // ── Confirm booking UI ────────────────────────────────────────────────────────
+      function showBookingConfirm(preText, booking, teacher) {
+        const endTime = fmt(toTime(toMin(booking.start) + booking.duration));
+        const dur = DURATIONS
+          ? DURATIONS.find((d) => d.value === booking.duration)
+          : null;
+
+        const msgDiv = document.createElement("div");
+        msgDiv.className = "msg bot";
+        msgDiv.innerHTML = `<div class="msg-avatar">AI</div>
+                              <div>
+                                <div class="confirm-box">
+                                  <div style="font-weight:600;font-size:13px;margin-bottom:10px;color:var(--text)">Booking Summary</div>
+                                  <div class="cf-row"><span class="cf-key">Teacher</span><span class="cf-val">${teacher.name}</span></div>
+                                  <div class="cf-row"><span class="cf-key">Subject</span><span class="cf-val">${teacher.subject}</span></div>
+                                  <div class="cf-row"><span class="cf-key">Day</span><span class="cf-val">${booking.day}</span></div>
+                                  <div class="cf-row"><span class="cf-key">Time</span><span class="cf-val">${fmt(booking.start)} – ${endTime}</span></div>
+                                  <div class="cf-row"><span class="cf-key">Duration</span><span class="cf-val">${booking.duration} min${dur ? `` : ""}</span></div>
+                                  ${booking.topic ? `<div class="cf-row"><span class="cf-key">Topic</span><span class="cf-val">${booking.topic}</span></div>` : ""}
+                                  <div class="confirm-actions">
+                                    <button class="btn btn-success" id="confirm-yes">Confirm Booking</button>
+                                    <button class="btn btn-ghost"   id="confirm-no">Cancel</button>
+                                  </div>
+                                </div>
+                              </div>`;
+        messagesEl.appendChild(msgDiv);
+        scrollBottom();
+
+        document.getElementById("confirm-yes").addEventListener("click", () => {
+          commitBooking(booking);
+          document
+            .getElementById("confirm-yes")
+            .closest(".confirm-box")
+            .querySelector(".confirm-actions").innerHTML =
+            `<div class="booked-badge">Booked! Awaiting teacher approval.</div>`;
+        });
+        document.getElementById("confirm-no").addEventListener("click", () => {
+          pendingBooking = null;
+          document
+            .getElementById("confirm-no")
+            .closest(".confirm-box")
+            .querySelector(".confirm-actions").innerHTML =
+            `<span style="color:var(--textSm);font-size:12px">Cancelled.</span>`;
+          addBotMessage(
+            "No problem! Let me know if you'd like to pick a different time or teacher.",
+          );
+        });
+      }
+
+      function commitBooking(b) {
+        const newC = {
+          id: genId(),
+          studentId: userId,
+          teacherId: b.teacherId,
+          day: b.day,
+          start: b.start,
+          duration: b.duration,
+          topic: b.topic,
+          status: "pending",
+          filedAt: new Date().toISOString(),
+        };
+        appState.consultations.push(newC);
+        if (!appState.notifs[b.teacherId]) appState.notifs[b.teacherId] = 0;
+        appState.notifs[b.teacherId]++;
+        saveState(appState);
+        pendingBooking = null;
+        renderBookingList();
+      }
+
+      // ── Booking list sidebar ──────────────────────────────────────────────────────
+      function renderBookingList() {
+        const mine = appState.consultations.filter(
+          (c) => c.studentId === userId,
+        );
+        if (!mine.length) {
+          bookingList.innerHTML = `<p style="color:var(--textSm);font-size:12px;font-weight:600">No bookings yet.</p>`;
+          return;
+        }
+        bookingList.innerHTML = [...mine]
+          .reverse()
+          .map((c) => {
+            const t = TEACHERS.find((x) => x.id === c.teacherId);
+            const statusColor =
+              {
+                pending: "var(--yellow)",
+                approved: "var(--green)",
+                rejected: "var(--red)",
+              }[c.status] || "var(--textSm)";
+            return `<div class="booking-summary">
+                      <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:6px;">${t?.name}</div>
+                      <div class="bs-row"><span>Day</span><span>${c.day}</span></div>
+                      <div class="bs-row"><span>Time</span><span>${fmt(c.start)}</span></div>
+                      <div class="bs-row"><span>Duration</span><span>${c.duration} min</span></div>
+                      <div style="margin-top:6px">
+                        <span style="font-size:11px;color:${statusColor};font-weight:700;">● ${c.status.toUpperCase()}</span>
+                      </div>
+                    </div>`;
+          })
+          .join("");
+      }
+
+      // ── Message rendering helpers ─────────────────────────────────────────────────
+      function addUserMessage(text) {
+        const div = document.createElement("div");
+        div.className = "msg user";
+        div.innerHTML = `<div class="msg-avatar">${currentStudent.initials}</div>
+                        <div class="msg-bubble">${escHtml(text)}</div>`;
+        messagesEl.appendChild(div);
+        scrollBottom();
+      }
+
+      function addBotMessage(text, quickReplies = []) {
+        const div = document.createElement("div");
+        div.className = "msg bot";
+        const qr = quickReplies.length
+          ? `<div class="quick-replies">
+              ${quickReplies.map((q) => `<button class="quick-reply">${q}</button>`).join("")}
+            </div>`
+          : "";
+        div.innerHTML = `<div class="msg-avatar">AI</div>
+                          <div>
+                            <div class="msg-bubble">${mdToHtml(text)}</div>
+                            ${qr}
+                          </div>`;
+        messagesEl.appendChild(div);
+        div.querySelectorAll(".quick-reply").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            btn
+              .closest(".quick-replies")
+              .querySelectorAll(".quick-reply")
+              .forEach((b) => (b.disabled = true));
+            sendMessage(btn.textContent);
+          });
+        });
+        scrollBottom();
+      }
+
+      function addTypingIndicator() {
+        const id = "typing-" + genId();
+        const div = document.createElement("div");
+        div.className = "msg bot";
+        div.id = id;
+        div.innerHTML = `<div class="msg-avatar">AI</div>
+                          <div class="msg-bubble">
+                            <div class="typing-indicator">
+                              <div class="typing-dot"></div>
+                              <div class="typing-dot"></div>
+                              <div class="typing-dot"></div>
+                            </div>
+                          </div>`;
+        messagesEl.appendChild(div);
+        scrollBottom();
+        return id;
+      }
+
+      function removeTypingIndicator(id) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      }
+
+      // ── Markdown → HTML (minimal) ─────────────────────────────────────────────────
+      function mdToHtml(text) {
+        return escHtml(text)
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/\*(.+?)\*/g, "<em>$1</em>")
+          .replace(/`(.+?)`/g, "<code>$1</code>")
+          .replace(
+            /^### (.+)$/gm,
+            "<div style='font-size:14px;font-weight:700;color:var(--blue);margin:10px 0 4px'>$1</div>",
+          )
+          .replace(
+            /^## (.+)$/gm,
+            "<div style='font-size:16px;font-weight:700;color:var(--text);margin:12px 0 6px'>$1</div>",
+          )
+          .replace(
+            /^- (.+)$/gm,
+            "<div style='padding-left:12px;margin:2px 0'>• $1</div>",
+          )
+          .replace(
+            /^\d+\. (.+)$/gm,
+            "<div style='padding-left:12px;margin:2px 0'>$1</div>",
+          )
+          .replace(/\n\n/g, "<br/><br/>")
+          .replace(/\n/g, "<br/>");
+      }
+
+      function escHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function scrollBottom() {
+        setTimeout(() => {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }, 50);
+      }
+
+      // ── Input events ──────────────────────────────────────────────────────────────
+      sendBtn.addEventListener("click", () => sendMessage(inputEl.value));
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage(inputEl.value);
+        }
+      });
+      inputEl.addEventListener("input", autoResize);
+
+      function autoResize() {
+        inputEl.style.height = "auto";
+        inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
+      }
+
+      document
+        .getElementById("clear-chat-btn")
+        .addEventListener("click", () => {
+          chatHistory = [];
+          messagesEl.innerHTML = "";
+          initChat();
+        });
+
+      // ── Init ──────────────────────────────────────────────────────────────────────
+      initChat();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <title>CORA — Teacher Dashboard</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-brand">Consult<span>Book</span></div>
+
+        <div class="sidebar-user" id="sidebar-user"><!-- filled by JS --></div>
+
+        <nav class="sidebar-nav">
+          <button class="nav-item active" data-tab="requests" id="nav-requests">
+            Requests
+            <span class="nav-badge" id="notif-badge" style="display: none"
+              >0</span
+            >
+          </button>
+          <button class="nav-item" data-tab="upcoming" id="nav-upcoming">
+            Upcoming
+          </button>
+          <button
+            class="nav-item"
+            data-tab="availability"
+            id="nav-availability"
+          >
+            Availability
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <a href="index.html">← Sign Out</a>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="main-pane" id="main-pane"><!-- filled by JS --></main>
+    </div>
+
+    <script src="shared.js"></script>
+    <script>
+      // ── Auth ──────────────────────────────────────────────────────────────────────
+      const userId = sessionStorage.getItem("currentUserId");
+      const userRole = sessionStorage.getItem("currentUserRole");
+      if (!userId || userRole !== "teacher") {
+        window.location.href = "index.html";
+      }
+      const teacher = TEACHERS.find((t) => t.id === userId);
+
+      // ── State ─────────────────────────────────────────────────────────────────────
+      let appState = getAppState();
+      let activeTab = "requests";
+      let addingSlot = false;
+      let slotError = "";
+
+      // ── Helpers ───────────────────────────────────────────────────────────────────
+      const esc = (s) =>
+        String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+
+      function avatar(initials, color = "#c8a45a", size = 36) {
+        const fs = Math.round(size * 0.36);
+        return `<div class="avatar" style="width:${size}px;height:${size}px;font-size:${fs}px;
+        background:${color}22;border:1.5px solid ${color}44;color:${color}">${esc(initials)}</div>`;
+      }
+
+      function pill(status) {
+        return `<span class="pill pill-${status}">
+        <span class="pill-dot"></span>${status.charAt(0).toUpperCase() + status.slice(1)}</span>`;
+      }
+
+      // ── Sidebar user ──────────────────────────────────────────────────────────────
+      document.getElementById("sidebar-user").innerHTML =
+        `${avatar(teacher.initials, teacher.color, 34)}
+      <div>
+        <div class="sidebar-user-name">${esc(teacher.name)}</div>
+        <div class="sidebar-user-sub">${esc(teacher.subject)}</div>
+      </div>`;
+
+      // ── Tab switching ─────────────────────────────────────────────────────────────
+      document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          activeTab = btn.dataset.tab;
+          document
+            .querySelectorAll(".nav-item")
+            .forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          if (activeTab === "requests") {
+            appState.notifs[teacher.id] = 0;
+            saveState(appState);
+          }
+          renderMain();
+        });
+      });
+
+      // ── Main render dispatcher ────────────────────────────────────────────────────
+      function renderMain() {
+        updateBadge();
+        const pane = document.getElementById("main-pane");
+        if (activeTab === "requests") pane.innerHTML = renderRequests();
+        else if (activeTab === "upcoming") pane.innerHTML = renderUpcoming();
+        else if (activeTab === "availability")
+          pane.innerHTML = renderAvailability();
+        attachMainEvents();
+      }
+
+      function updateBadge() {
+        const count = appState.notifs[teacher.id] || 0;
+        const badge = document.getElementById("notif-badge");
+        if (count > 0) {
+          badge.style.display = "";
+          badge.textContent = count;
+        } else badge.style.display = "none";
+      }
+
+      // ── REQUESTS ──────────────────────────────────────────────────────────────────
+      function renderRequests() {
+        const all = appState.consultations.filter(
+          (c) => c.teacherId === teacher.id,
+        );
+        const pending = all.filter((c) => c.status === "pending");
+        const past = all.filter((c) => c.status !== "pending");
+
+        const pendingStats = all.filter((c) => c.status === "pending").length;
+        const approvedStats = all.filter((c) => c.status === "approved").length;
+        const totalStats = all.length;
+
+        let html = `<div class="page-hd">
+                      <h1>Consultation Requests</h1>
+                      <p>${
+                        pending.length > 0
+                          ? `You have <strong style="color:var(--blue)">${pending.length}</strong> pending request${pending.length > 1 ? "s" : ""}!`
+                          : "All caught up! No pending requests"
+                      }</p>
+                    </div>
+                    <div class="page-body">
+                      <div class="dash-stats">
+                        <div class="stat-card">
+                          <div class="stat-num">${pendingStats}</div>
+                          <div class="stat-label">Pending</div>
+                        </div>
+                        <div class="stat-card">
+                          <div class="stat-num">${approvedStats}</div>
+                          <div class="stat-label">Approved</div>
+                        </div>
+                        <div class="stat-card">
+                          <div class="stat-num">${totalStats}</div>
+                          <div class="stat-label">Total</div>
+                        </div>
+                      </div>`;
+
+        if (!pending.length) {
+          html += `<div class="empty-state"><div>No pending requests right now!</div></div>`;
+        }
+
+        pending.forEach((c) => {
+          const student = STUDENTS.find((s) => s.id === c.studentId);
+          const dur = DURATIONS.find((d) => d.value === c.duration);
+          const endTime = fmt(toTime(toMin(c.start) + c.duration));
+          html += `<div class="req-card">
+                    <div class="req-card-row">
+                      <div style="display:flex;gap:14px;align-items:flex-start;flex:1">
+                        ${avatar(student.initials, student.color || "#3b6bff", 36)}
+                        <div>
+                          <div style="font-weight:700;font-size:15px;margin-bottom:3px;">${esc(student.name)}</div>
+                          <div style="color:var(--textMd);font-size:12px;font-weight:600;margin-bottom:8px">
+                            ${esc(c.day)} · ${fmt(c.start)} – ${endTime}
+                            &nbsp;·&nbsp; <span style="color:var(--blue);font-weight:700">${dur?.label}</span>
+                          </div>
+                          ${c.topic ? `<div style="background:var(--bg);border-left:3px solid var(--blue);border-radius:var(--radius);padding:7px 12px;font-size:13px;font-weight:600;max-width:420px">${esc(c.topic)}</div>` : ""}
+                          <div style="font-size:11px;color:var(--textSm);font-weight:600;margin-top:8px">
+                            Filed ${new Date(c.filedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          </div>
+                        </div>
+                      </div>
+                      <div class="req-actions">
+                        <button class="btn btn-success" data-handle="${c.id}" data-status="approved">✓ Approve</button>
+                        <button class="btn btn-danger"  data-handle="${c.id}" data-status="rejected">✗ Decline</button>
+                      </div>
+                    </div>
+                  </div>`;
+        });
+
+        if (past.length) {
+          html += `<div class="sec-label">Past Decisions</div>`;
+          past.forEach((c) => {
+            const student = STUDENTS.find((s) => s.id === c.studentId);
+            const dur = DURATIONS.find((d) => d.value === c.duration);
+            html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+                      padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px;opacity:.85;">
+                      ${avatar(student.initials, student.color || "#3b6bff", 30)}
+                      <div style="flex:1;font-size:13px;font-weight:600">
+                        <strong style="">${esc(student.name)}</strong>
+                        <span style="color:var(--textMd)"> — ${esc(c.day)} · ${fmt(c.start)} · ${dur?.label}</span>
+                      </div>
+                      ${pill(c.status)}
+                    </div>`;
+          });
+        }
+
+        return html + "</div>";
+      }
+
+      // ── UPCOMING ──────────────────────────────────────────────────────────────────
+      function renderUpcoming() {
+        const approved = appState.consultations.filter(
+          (c) => c.teacherId === teacher.id && c.status === "approved",
+        );
+        let html = `<div class="page-hd">
+                      <h1>Upcoming Consultations</h1>
+                      <p>Confirmed sessions with your students.</p>
+                    </div>
+                    <div class="page-body">`;
+
+        if (!approved.length) {
+          html += `<div class="empty-state"><div>No confirmed consultations yet!</div></div>`;
+        } else {
+          WEEKDAYS.forEach((day) => {
+            const sessions = approved
+              .filter((c) => c.day === day)
+              .sort((a, b) => toMin(a.start) - toMin(b.start));
+            if (!sessions.length) return;
+            html += `<div class="sec-label">${day}</div>`;
+            sessions.forEach((c) => {
+              const student = STUDENTS.find((s) => s.id === c.studentId);
+              const dur = DURATIONS.find((d) => d.value === c.duration);
+              html += `<div class="upcoming-item">
+                        <div class="time-badge">
+                          <div class="tb-time">${fmt(c.start)}</div>
+                          <div class="tb-dur">${dur?.label}</div>
+                        </div>
+                        ${avatar(student.initials, student.color || "#3b6bff", 36)}
+                        <div style="flex:1">
+                          <div style="font-weight:700;color:var(--text);;font-size:15px">${esc(student.name)}</div>
+                          ${c.topic ? `<div style="color:var(--textMd);font-size:12px;font-weight:600;margin-top:2px">${esc(c.topic)}</div>` : ""}
+                        </div>
+                        ${pill("approved")}
+                      </div>`;
+            });
+          });
+        }
+        return html + "</div>";
+      }
+
+      // ── AVAILABILITY ──────────────────────────────────────────────────────────────
+      function renderAvailability() {
+        const mySlots = appState.schedules[teacher.id] || [];
+        let html = `<div class="page-hd">
+                      <h1>My Availability</h1>
+                      <p>Set the windows when students can book consultations with you.</p>
+                    </div>
+                    <div class="page-body">
+                      <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
+                        <button class="btn btn-gold" id="add-slot-btn">+ Add Slot</button>
+                      </div>`;
+
+        if (addingSlot) {
+          html += `<div class="slot-form">
+                    <div style=";font-size:17px;font-weight:700;color:var(--text);margin-bottom:16px">
+                      New Availability Window
+                    </div>
+                    <div class="slot-form-grid">
+                      <div>
+                        <label class="input-label">Day</label>
+                        <select id="slot-day">${WEEKDAYS.map((d) => `<option>${d}</option>`).join("")}</select>
+                      </div>
+                      <div>
+                        <label class="input-label">Start Time</label>
+                        <input type="time" id="slot-start" value="09:00"/>
+                      </div>
+                      <div>
+                        <label class="input-label">End Time</label>
+                        <input type="time" id="slot-end" value="11:00"/>
+                      </div>
+                    </div>
+                    ${slotError ? `<div style="color:var(--red);font-size:13px;font-weight:700;margin-bottom:12px">${esc(slotError)}</div>` : ""}
+                    <div style="display:flex;gap:8px">
+                      <button class="btn btn-gold"  id="save-slot-btn">Save Slot</button>
+                      <button class="btn btn-ghost" id="cancel-slot-btn">Cancel</button>
+                    </div>
+                  </div>`;
+        }
+
+        if (!mySlots.length) {
+          html += `<div class="empty-state"><div>No availability set yet. Add a slot above!</div></div>`;
+        } else {
+          WEEKDAYS.forEach((day) => {
+            const slots = mySlots.filter((s) => s.day === day);
+            if (!slots.length) return;
+            html += `<div class="sec-label">${day}</div>`;
+            slots.forEach((slot) => {
+              const hrs = ((toMin(slot.end) - toMin(slot.start)) / 60).toFixed(
+                1,
+              );
+              html += `<div class="avail-slot">
+                        <div style="font-weight:700;">
+                          <span style="color:var(--blue)">${fmt(slot.start)}</span>
+                          <span style="color:var(--textSm);margin:0 10px">→</span>
+                          <span style="color:var(--blue)">${fmt(slot.end)}</span>
+                          <span style="color:var(--textSm);font-size:12px;margin-left:10px;">(${hrs} hrs)</span>
+                        </div>
+                        <button class="slot-remove" data-remove="${slot.id}">×</button>
+                      </div>`;
+            });
+          });
+        }
+        return html + "</div>";
+      }
+
+      // ── Event handlers ────────────────────────────────────────────────────────────
+      function attachMainEvents() {
+        // Approve / Decline
+        document.querySelectorAll("[data-handle]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const c = appState.consultations.find(
+              (x) => x.id === btn.dataset.handle,
+            );
+            if (c) {
+              c.status = btn.dataset.status;
+              saveState(appState);
+              renderMain();
+            }
+          });
+        });
+
+        // Remove slot
+        document.querySelectorAll("[data-remove]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            appState.schedules[teacher.id] = (
+              appState.schedules[teacher.id] || []
+            ).filter((s) => s.id !== btn.dataset.remove);
+            saveState(appState);
+            renderMain();
+          });
+        });
+
+        // Show add slot form
+        const addBtn = document.getElementById("add-slot-btn");
+        if (addBtn)
+          addBtn.addEventListener("click", () => {
+            addingSlot = true;
+            slotError = "";
+            renderMain();
+          });
+
+        // Cancel form
+        const cancelBtn = document.getElementById("cancel-slot-btn");
+        if (cancelBtn)
+          cancelBtn.addEventListener("click", () => {
+            addingSlot = false;
+            slotError = "";
+            renderMain();
+          });
+
+        // Save slot
+        const saveBtn = document.getElementById("save-slot-btn");
+        if (saveBtn)
+          saveBtn.addEventListener("click", () => {
+            const day = document.getElementById("slot-day").value;
+            const start = document.getElementById("slot-start").value;
+            const end = document.getElementById("slot-end").value;
+            slotError = "";
+            if (toMin(start) >= toMin(end)) {
+              slotError = "Start must be before end time.";
+              renderMain();
+              return;
+            }
+            const existing = appState.schedules[teacher.id] || [];
+            if (
+              existing.some(
+                (s) =>
+                  s.day === day &&
+                  toMin(start) < toMin(s.end) &&
+                  toMin(end) > toMin(s.start),
+              )
+            ) {
+              slotError = "This overlaps with an existing slot.";
+              renderMain();
+              return;
+            }
+            if (!appState.schedules[teacher.id])
+              appState.schedules[teacher.id] = [];
+            appState.schedules[teacher.id].push({
+              id: genId(),
+              day,
+              start,
+              end,
+            });
+            saveState(appState);
+            addingSlot = false;
+            slotError = "";
+            renderMain();
+          });
+      }
+
+      // ── Poll for new notifications ────────────────────────────────────────────────
+      setInterval(() => {
+        appState = getAppState();
+        updateBadge();
+      }, 3000);
+
+      // ── Init ──────────────────────────────────────────────────────────────────────
+      renderMain();
+    </script>
+  </body>
+</html>

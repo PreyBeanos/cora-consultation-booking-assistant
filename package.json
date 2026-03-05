@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@google/genai": "^1.44.0",
+    "install": "^0.13.0",
+    "npm": "^11.11.0"
+  }
+}
