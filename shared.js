@@ -1,4 +1,4 @@
-// ── Shared Data & State ───────────────────────────────────────────────────────
+// ── Shared Data & State (Memory only) ───────────────────────────────────────────────────────
 
 const TEACHERS = [
   {
@@ -178,7 +178,7 @@ function buildScheduleContext(state) {
     slots.forEach((s) => {
       lines.push(`  ${s.day}: ${fmt(s.start)} – ${fmt(s.end)}`);
     });
-    // Also show what's already booked
+    // Show what's already booked
     const booked = state.consultations.filter(
       (c) => c.teacherId === t.id && c.status !== "rejected",
     );

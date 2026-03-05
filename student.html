@@ -478,7 +478,7 @@
         if (el) el.remove();
       }
 
-      // ── Markdown → HTML (minimal) ─────────────────────────────────────────────────
+      // ── Markdown to HTML  ─────────────────────────────────────────────────
       function mdToHtml(text) {
         return escHtml(text)
           .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
